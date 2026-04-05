@@ -4,21 +4,30 @@ import requests
 import time
 import os
 
-# --- CONFIGURATION DES SECRETS ---
-# Streamlit Cloud cherchera dans "Secrets", en local il cherchera dans tes variables d'env
+# --- 1. CONFIGURATION DES SECRETS ---
+# Cherche d'abord dans Streamlit Secrets (Cloud), sinon dans l'environnement local
 API_TOKEN = st.secrets.get("APIFY_API_TOKEN") or os.getenv("APIFY_API_TOKEN")
 ACTOR_ID = "shu8hvrXbJbY3Eb9W" 
 
-st.set_page_config(page_title="Insta Analytics", layout="wide")
-st.title("📊 Analyseur de Performance Instagram")
+st.set_page_config(page_title="Insta Performance Pro", layout="wide", page_icon="📊")
 
-# --- FONCTION AVEC CACHE (1 HEURE) ---
+# Style CSS pour améliorer l'affichage sur mobile
+st.markdown("""
+    <style>
+    .main { padding-top: 1rem; }
+    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_status=True)
+
+st.title("📊 Instagram Performance Analyzer")
+
+# --- 2. FONCTION DE RÉCUPÉRATION AVEC CACHE (1 HEURE) ---
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_instagram_data(insta_url, num_posts):
+def fetch_insta_data(insta_url, num_posts):
     if not API_TOKEN:
-        return {"error": "Clé API manquante. Configurez APIFY_API_TOKEN dans les secrets."}
+        return {"error": "Clé API manquante. Configurez APIFY_API_TOKEN dans les secrets Streamlit."}
 
-    # 1. Lancement du Run (POST)
+    # Étape A : Lancement du Scraper (POST)
     run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={API_TOKEN}"
     payload = {
         "directUrls": [insta_url],
@@ -27,75 +36,99 @@ def get_instagram_data(insta_url, num_posts):
     }
     
     try:
-        res_post = requests.post(run_url, json=payload)
+        res_post = requests.post(run_url, json=payload, timeout=30)
         if res_post.status_code != 201:
-            return {"error": f"Apify Error {res_post.status_code}: {res_post.text}"}
+            return {"error": f"Erreur Apify {res_post.status_code}: {res_post.text}"}
         
         run_data = res_post.json()
         dataset_id = run_data.get("data", {}).get("defaultDatasetId")
         
         if not dataset_id:
-            return {"error": "Impossible de récupérer l'ID du dataset."}
+            return {"error": "L'API n'a pas retourné d'ID de données."}
 
-        # 2. Attente de sécurité (On peut améliorer ça, mais 15s est un bon début)
+        # Étape B : Attente (Le temps que le scraper travaille)
+        # Pour une app pro, on pourrait boucler sur l'état du run, mais 15s suffit pour 10-20 posts
         time.sleep(15)
         
-        # 3. Récupération des données (GET)
+        # Étape C : Récupération des résultats (GET)
         get_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={API_TOKEN}&format=json"
-        res_get = requests.get(get_url)
+        res_get = requests.get(get_url, timeout=30)
         return res_get.json()
         
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Erreur de connexion : {str(e)}"}
 
-# --- INTERFACE ---
-# L'URL est maintenant vide par défaut ou utilise un exemple, mais c'est l'utilisateur qui décide
+# --- 3. INTERFACE UTILISATEUR ---
+with st.sidebar:
+    st.header("Paramètres")
+    limit = st.slider("Nombre de posts à analyser", 5, 50, 12)
+    st.info("Le cache garde les résultats en mémoire pendant 1h pour économiser vos crédits.")
+
 url_input = st.text_input("Lien du profil Instagram", placeholder="https://www.instagram.com/nom_du_compte/")
-limit = st.slider("Nombre de posts à analyser", 5, 50, 10)
 
-if st.button("🚀 Lancer l'analyse"):
+if st.button("🚀 Analyser la performance"):
     if not url_input:
-        st.warning("Veuillez entrer une URL Instagram.")
+        st.warning("Veuillez entrer une URL de profil valide.")
     else:
-        with st.status("Récupération des données (API Apify)...") as status:
-            data = get_instagram_data(url_input, limit)
+        with st.status("Récupération des données Instagram...") as status:
+            data = fetch_insta_data(url_input, limit)
             
             if isinstance(data, dict) and "error" in data:
-                status.update(label="Erreur détectée", state="error")
+                status.update(label="Échec de l'analyse", state="error")
                 st.error(data["error"])
-            elif not data:
-                status.update(label="Aucune donnée", state="error")
-                st.error("L'API n'a retourné aucun résultat. Le profil est peut-être privé ou l'URL est fausse.")
+            elif not data or len(data) == 0:
+                status.update(label="Aucun résultat", state="error")
+                st.error("Aucune donnée reçue. Vérifiez que le profil est public.")
             else:
-                status.update(label="Données récupérées !", state="complete")
+                status.update(label="Données analysées avec succès !", state="complete")
                 
+                # --- 4. TRAITEMENT DES DONNÉES (SÉCURISÉ) ---
                 df = pd.DataFrame(data)
 
-                # --- NETTOYAGE & CALCULS ---
+                # Sécurité : On crée les colonnes si elles manquent dans le JSON
+                for col in ['likesCount', 'videoPlayCount', 'commentsCount', 'displayUrl', 'url', 'timestamp']:
+                    if col not in df.columns:
+                        df[col] = 0 if 'Count' in col else ""
+
+                # Conversion numérique propre
                 df['likesCount'] = pd.to_numeric(df['likesCount'], errors='coerce').fillna(0)
                 df['videoPlayCount'] = pd.to_numeric(df['videoPlayCount'], errors='coerce').fillna(0)
+                df['commentsCount'] = pd.to_numeric(df['commentsCount'], errors='coerce').fillna(0)
+                
+                # Calcul de la visibilité (Engagement + Portée vidéo)
                 df['Total_Visibility'] = df['likesCount'] + df['videoPlayCount']
-
-                # --- AFFICHAGE DES TOP PERFORMANCES ---
-                st.subheader("🏆 Top des Posts par Visibilité")
+                
+                # Tri par performance
                 df_sorted = df.sort_values(by='Total_Visibility', ascending=False)
 
+                # --- 5. AFFICHAGE DES RÉSULTATS ---
+                
+                # Top 3 en visuels
+                st.subheader("🏆 Top 3 des posts les plus performants")
                 top3 = df_sorted.head(3)
                 cols = st.columns(3)
-                for i, (index, row) in enumerate(top3.iterrows()):
+                
+                for i, (idx, row) in enumerate(top3.iterrows()):
                     with cols[i]:
-                        # Gestion de l'image (si absente)
-                        img = row.get('displayUrl') or "https://via.placeholder.com/300"
+                        img = row['displayUrl'] if row['displayUrl'] else "https://via.placeholder.com/300"
                         st.image(img, use_container_width=True)
                         st.metric("❤️ Likes", f"{int(row['likesCount']):,}")
-                        st.metric("👁️ Vues", f"{int(row['videoPlayCount']):,}")
-                        st.write(f"[Voir le post]({row.get('url', '#')})")
+                        
+                        v_count = int(row['videoPlayCount'])
+                        st.metric("👁️ Vues Vidéo", f"{v_count:,}" if v_count > 0 else "📸 Photo")
+                        
+                        st.write(f"[🔗 Voir le post]({row['url']})")
 
-                # --- TABLEAU COMPLET ---
-                st.subheader("📋 Liste détaillée des posts")
-                # On ne prend que les colonnes qui existent vraiment
-                cols_target = ['timestamp', 'likesCount', 'videoPlayCount', 'commentsCount', 'url']
-                cols_present = [c for c in cols_target if c in df.columns]
-                st.dataframe(df_sorted[cols_present], use_container_width=True)
-                
-                st.caption("ℹ️ Les résultats sont mis en cache pendant 1 heure pour économiser vos crédits.")
+                # Graphique d'évolution (Optionnel)
+                st.subheader("📈 Évolution de la visibilité")
+                if 'timestamp' in df.columns:
+                    df['date'] = pd.to_datetime(df['timestamp']).dt.date
+                    chart_data = df.groupby('date')['Total_Visibility'].sum()
+                    st.line_chart(chart_data)
+
+                # Tableau complet
+                st.subheader("📋 Détails de tous les posts")
+                display_df = df_sorted[['timestamp', 'likesCount', 'videoPlayCount', 'commentsCount', 'url']].copy()
+                st.dataframe(display_df, use_container_width=True)
+
+# --- FIN DU CODE ---

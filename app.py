@@ -4,74 +4,98 @@ import requests
 import time
 import os
 
-# --- CONFIGURATION ---
-API_TOKEN = os.getenv("APIFY_API_TOKEN")
-ACTOR_ID = "shu8hvrXbJbY3Eb9W"  # L'ID de l'Instagram Scraper
+# --- CONFIGURATION DES SECRETS ---
+# Streamlit Cloud cherchera dans "Secrets", en local il cherchera dans tes variables d'env
+API_TOKEN = st.secrets.get("APIFY_API_TOKEN") or os.getenv("APIFY_API_TOKEN")
+ACTOR_ID = "shu8hvrXbJbY3Eb9W" 
 
 st.set_page_config(page_title="Insta Analytics", layout="wide")
 st.title("📊 Analyseur de Performance Instagram")
 
+# --- FONCTION AVEC CACHE (1 HEURE) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_instagram_data(insta_url, num_posts):
+    if not API_TOKEN:
+        return {"error": "Clé API manquante. Configurez APIFY_API_TOKEN dans les secrets."}
+
+    # 1. Lancement du Run (POST)
+    run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={API_TOKEN}"
+    payload = {
+        "directUrls": [insta_url],
+        "resultsLimit": num_posts,
+        "resultsType": "posts"
+    }
+    
+    try:
+        res_post = requests.post(run_url, json=payload)
+        if res_post.status_code != 201:
+            return {"error": f"Apify Error {res_post.status_code}: {res_post.text}"}
+        
+        run_data = res_post.json()
+        dataset_id = run_data.get("data", {}).get("defaultDatasetId")
+        
+        if not dataset_id:
+            return {"error": "Impossible de récupérer l'ID du dataset."}
+
+        # 2. Attente de sécurité (On peut améliorer ça, mais 15s est un bon début)
+        time.sleep(15)
+        
+        # 3. Récupération des données (GET)
+        get_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={API_TOKEN}&format=json"
+        res_get = requests.get(get_url)
+        return res_get.json()
+        
+    except Exception as e:
+        return {"error": str(e)}
+
 # --- INTERFACE ---
-url_input = st.text_input("Lien du profil Instagram", "https://www.instagram.com/cedricgrolet/")
+# L'URL est maintenant vide par défaut ou utilise un exemple, mais c'est l'utilisateur qui décide
+url_input = st.text_input("Lien du profil Instagram", placeholder="https://www.instagram.com/nom_du_compte/")
 limit = st.slider("Nombre de posts à analyser", 5, 50, 10)
 
 if st.button("🚀 Lancer l'analyse"):
-    with st.status("Communication avec Apify en cours...") as status:
-        
-        # 1. ENVOI DU POST (Comme ton tRESTClient 1)
-        run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={API_TOKEN}"
-        payload = {
-            "directUrls": [url_input],
-            "resultsLimit": limit,
-            "resultsType": "posts"
-        }
-        
-        res_post = requests.post(run_url, json=payload)
-        run_data = res_post.json()
-        run_id = run_data["data"]["id"]
-        dataset_id = run_data["data"]["defaultDatasetId"]
-        
-        # 2. ATTENTE (Le scraper doit travailler)
-        status.update(label="Le scraper travaille sur Instagram... patientez.")
-        time.sleep(15) # On attend un peu que les premiers résultats arrivent
-        
-        # 3. RÉCUPÉRATION DU GET (Comme ton tRESTClient 2)
-        get_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={API_TOKEN}&format=json"
-        res_get = requests.get(get_url)
-        data = res_get.json()
-        
-        status.update(label="Analyse terminée !", state="complete")
-
-    if data:
-        df = pd.DataFrame(data)
-
-        # --- NETTOYAGE & CALCULS ---
-        # On s'assure que les colonnes numériques sont bien des nombres
-        df['likesCount'] = pd.to_numeric(df['likesCount'], errors='coerce').fillna(0)
-        df['videoPlayCount'] = pd.to_numeric(df['videoPlayCount'], errors='coerce').fillna(0)
-        
-        # Calcul de la visibilité totale (Likes + Vues)
-        df['Total_Visibility'] = df['likesCount'] + df['videoPlayCount']
-
-        # --- AFFICHAGE DES TOP PERFORMANCES ---
-        st.subheader("🏆 Top des Posts par Visibilité")
-        
-        # On trie par visibilité décroissante
-        df_sorted = df.sort_values(by='Total_Visibility', ascending=False)
-
-        # Affichage en colonnes des 3 meilleurs
-        top3 = df_sorted.head(3)
-        cols = st.columns(3)
-        for i, (index, row) in enumerate(top3.iterrows()):
-            with cols[i]:
-                st.image(row['displayUrl'], use_container_width=True)
-                st.metric("❤️ Likes", f"{int(row['likesCount']):,}")
-                st.metric("👁️ Vues", f"{int(row['videoPlayCount']):,}")
-                st.write(f"[Voir le post]({row['url']})")
-
-        # --- TABLEAU COMPLET ---
-        st.subheader("📋 Liste détaillée des posts")
-        st.dataframe(df_sorted[['timestamp', 'likesCount', 'videoPlayCount', 'commentsCount', 'url']], 
-                     use_container_width=True)
+    if not url_input:
+        st.warning("Veuillez entrer une URL Instagram.")
     else:
-        st.error("Aucune donnée trouvée. Vérifie l'URL du profil.")
+        with st.status("Récupération des données (API Apify)...") as status:
+            data = get_instagram_data(url_input, limit)
+            
+            if isinstance(data, dict) and "error" in data:
+                status.update(label="Erreur détectée", state="error")
+                st.error(data["error"])
+            elif not data:
+                status.update(label="Aucune donnée", state="error")
+                st.error("L'API n'a retourné aucun résultat. Le profil est peut-être privé ou l'URL est fausse.")
+            else:
+                status.update(label="Données récupérées !", state="complete")
+                
+                df = pd.DataFrame(data)
+
+                # --- NETTOYAGE & CALCULS ---
+                df['likesCount'] = pd.to_numeric(df['likesCount'], errors='coerce').fillna(0)
+                df['videoPlayCount'] = pd.to_numeric(df['videoPlayCount'], errors='coerce').fillna(0)
+                df['Total_Visibility'] = df['likesCount'] + df['videoPlayCount']
+
+                # --- AFFICHAGE DES TOP PERFORMANCES ---
+                st.subheader("🏆 Top des Posts par Visibilité")
+                df_sorted = df.sort_values(by='Total_Visibility', ascending=False)
+
+                top3 = df_sorted.head(3)
+                cols = st.columns(3)
+                for i, (index, row) in enumerate(top3.iterrows()):
+                    with cols[i]:
+                        # Gestion de l'image (si absente)
+                        img = row.get('displayUrl') or "https://via.placeholder.com/300"
+                        st.image(img, use_container_width=True)
+                        st.metric("❤️ Likes", f"{int(row['likesCount']):,}")
+                        st.metric("👁️ Vues", f"{int(row['videoPlayCount']):,}")
+                        st.write(f"[Voir le post]({row.get('url', '#')})")
+
+                # --- TABLEAU COMPLET ---
+                st.subheader("📋 Liste détaillée des posts")
+                # On ne prend que les colonnes qui existent vraiment
+                cols_target = ['timestamp', 'likesCount', 'videoPlayCount', 'commentsCount', 'url']
+                cols_present = [c for c in cols_target if c in df.columns]
+                st.dataframe(df_sorted[cols_present], use_container_width=True)
+                
+                st.caption("ℹ️ Les résultats sont mis en cache pendant 1 heure pour économiser vos crédits.")

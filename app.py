@@ -19,7 +19,6 @@ st.set_page_config(page_title="Rila Analytics | Insta Performance", layout="wide
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400;600&display=swap');
-
     .main { background-color: #FDFCFB; }
     h1, h2, h3 { font-family: 'Playfair Display', serif !important; color: #1A1A1A !important; font-weight: 400 !important; letter-spacing: 0.05em; }
     .rila-card { background-color: #ffffff; border-radius: 4px; border: 1px solid #EAE7E2; margin-bottom: 25px; overflow: hidden; }
@@ -48,7 +47,7 @@ def fetch_insta_data(insta_url, num_posts):
         res = requests.post(run_url, json=payload, timeout=40)
         if res.status_code != 201: return {"error": f"Erreur API ({res.status_code})"}
         ds_id = res.json().get("data", {}).get("defaultDatasetId")
-        time.sleep(20) # Temps pour le scraping
+        time.sleep(20)
         items_res = requests.get(f"https://api.apify.com/v2/datasets/{ds_id}/items?token={API_TOKEN}")
         return items_res.json()
     except Exception as e: return {"error": str(e)}
@@ -73,75 +72,52 @@ if st.button("Lancer l'analyse"):
         with st.spinner("Analyse du feed en cours..."):
             data = fetch_insta_data(url_input, limit)
             
-            # GESTION DES ERREURS DE RÉCUPÉRATION
             if isinstance(data, dict) and "error" in data:
                 st.error(f"Erreur : {data['error']}")
             elif not isinstance(data, list) or len(data) == 0:
-                st.warning("⚠️ Aucune donnée trouvée. Le compte est peut-être privé ou l'URL est incorrecte.")
+                st.warning("⚠️ Aucune donnée trouvée.")
             else:
                 df = pd.DataFrame(data)
                 
-                # NETTOYAGE COMPLET DES COLONNES (Surtout pour les comptes sans vidéo)
+                # NETTOYAGE ROBUSTE DES COLONNES
                 for col in ['likesCount', 'videoPlayCount', 'commentsCount']:
-                    df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
+                    if col not in df.columns:
+                        df[col] = 0.0 # Création d'une colonne vide si absente
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
                 
                 if 'displayUrl' not in df.columns: df['displayUrl'] = ""
                 if 'url' not in df.columns: df['url'] = "https://instagram.com"
 
-                # Tri par Performance (Likes + Vues)
-                df['Performance_Score'] = df['likesCount'] + df['videoPlayCount']
-                df_sorted = df.sort_values(by='Performance_Score', ascending=False)
+                df['Score'] = df['likesCount'] + df['videoPlayCount']
+                df_sorted = df.sort_values(by='Score', ascending=False)
 
-                # AFFICHAGE TOP 3 DESIGN RILA
                 st.subheader("Contenus Performants")
                 top3 = df_sorted.head(3)
-                cols = st.columns(3)
+                cols = st.columns(len(top3) if len(top3) > 0 else 1)
                 
                 for i, (idx, row) in enumerate(top3.iterrows()):
                     with cols[i]:
                         raw_url = row.get('displayUrl', '')
                         img_src = f"https://images.weserv.nl/?url={quote(str(raw_url))}&w=600&h=800&fit=cover" if raw_url else "https://via.placeholder.com/600"
                         
-                        l_val = float(row['likesCount'])
-                        v_val = float(row['videoPlayCount'])
-                        c_val = float(row['commentsCount'])
+                        l_val, v_val, c_val = float(row['likesCount']), float(row['videoPlayCount']), float(row['commentsCount'])
                         
-                        # CALCUL TAUX ENGAGEMENT SÉCURISÉ (Si pas de vues, on met N/A ou 0%)
-                        if v_val > 0:
-                            rate = f"{((l_val + c_val) / v_val * 100):.1f}%"
-                        else:
-                            rate = "Photo" # Ou "0%" selon ta préférence
+                        # Taux Engagement : si pas de vues (photo), on peut utiliser Likes/Abonnés mais ici on reste sur 0 ou N/A
+                        rate = f"{((l_val + c_val) / v_val * 100):.1f}%" if v_val > 0 else "N/A"
 
-                        card_html = f"""
+                        st.markdown(f"""
                         <div class="rila-card">
                             <img src="{img_src}" class="card-image">
                             <div class="card-stats">
-                                <div class="stat-row">
-                                    <span class="stat-label">Interactions</span>
-                                    <span class="stat-value">{format_num(l_val)}</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span class="stat-label">Visibilité</span>
-                                    <span class="stat-value">{format_num(v_val) if v_val > 0 else "Format Photo"}</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span class="stat-label">Engagement</span>
-                                    <span class="stat-value">{rate}</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span class="stat-label">Commentaires</span>
-                                    <span class="stat-value">{format_num(c_val)}</span>
-                                </div>
+                                <div class="stat-row"><span class="stat-label">Interactions</span><span class="stat-value">{format_num(l_val)}</span></div>
+                                <div class="stat-row"><span class="stat-label">Visibilité</span><span class="stat-value">{format_num(v_val) if v_val > 0 else "Format Photo"}</span></div>
+                                <div class="stat-row"><span class="stat-label">Engagement</span><span class="stat-value">{rate}</span></div>
+                                <div class="stat-row"><span class="stat-label">Commentaires</span><span class="stat-value">{format_num(c_val)}</span></div>
                             </div>
-                            <div class="card-link">
-                                <a href="{row['url']}" target="_blank">DÉCOUVRIR LE POST</a>
-                            </div>
+                            <div class="card-link"><a href="{row['url']}" target="_blank">DÉCOUVRIR LE POST</a></div>
                         </div>
-                        """
-                        st.markdown(card_html, unsafe_allow_html=True)
+                        """, unsafe_allow_html=True)
 
                 st.divider()
-                st.subheader("Historique récent")
-                df_table = df_sorted[['likesCount', 'videoPlayCount', 'commentsCount', 'url']].copy()
-                df_table.columns = ['Likes', 'Vues', 'Comms', 'Lien']
-                st.dataframe(df_table.head(10), use_container_width=True)
+                st.subheader("Historique")
+                st.dataframe(df_sorted[['likesCount', 'videoPlayCount', 'commentsCount', 'url']].rename(columns={'likesCount':'Likes','videoPlayCount':'Vues','commentsCount':'Comms'}), use_container_width=True)

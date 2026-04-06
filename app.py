@@ -18,12 +18,9 @@ st.set_page_config(page_title="Rila Analytics | Insta Performance", layout="wide
 # --- 2. STYLE CSS SIGNATURE RILA STUDIO ---
 st.markdown("""
     <style>
-    /* Importation d'une police élégante */
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400;600&display=swap');
 
-    .main { 
-        background-color: #FDFCFB; /* Fond blanc cassé type Rila */
-    }
+    .main { background-color: #FDFCFB; }
     
     h1, h2, h3 {
         font-family: 'Playfair Display', serif !important;
@@ -32,18 +29,13 @@ st.markdown("""
         letter-spacing: 0.05em;
     }
 
-    /* Style de la carte Rila */
     .rila-card {
         background-color: #ffffff;
-        border-radius: 4px; /* Moins arrondi, plus chic */
+        border-radius: 4px;
         border: 1px solid #EAE7E2;
         margin-bottom: 25px;
         overflow: hidden;
         transition: transform 0.3s ease;
-    }
-    .rila-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 10px 20px rgba(212, 194, 173, 0.15);
     }
 
     .card-image {
@@ -66,49 +58,40 @@ st.markdown("""
     .stat-row:last-child { border-bottom: none; }
 
     .stat-label {
-        color: #8C8279; /* Gris chaud */
-        font-size: 13px;
+        color: #8C8279;
+        font-size: 11px;
         text-transform: uppercase;
-        letter-spacing: 0.1em;
+        letter-spacing: 0.15em;
     }
 
     .stat-value {
         color: #1A1A1A;
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 600;
     }
 
-    /* Le lien bouton beige signature */
     .card-link {
         text-align: center;
-        padding: 15px;
+        padding: 20px;
         background-color: #FDFCFB;
     }
     .card-link a {
-        color: #D4C2AD; /* Beige Rila */
+        color: #D4C2AD;
         text-decoration: none;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.2em;
         border-bottom: 1px solid #D4C2AD;
-        transition: all 0.3s;
-    }
-    .card-link a:hover {
-        color: #1A1A1A;
-        border-color: #1A1A1A;
     }
 
-    /* Personnalisation du bouton Streamlit */
     div.stButton > button {
         background-color: #D4C2AD !important;
         color: white !important;
         border: none !important;
-        border-radius: 2px !important;
-        font-family: 'Inter', sans-serif;
-        text-transform: uppercase;
+        border-radius: 0px !important;
         letter-spacing: 0.1em;
-        padding: 0.5rem 2rem !important;
+        padding: 0.6rem 2.5rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -124,7 +107,7 @@ def fetch_insta_data(insta_url, num_posts):
     payload = {"directUrls": [insta_url], "resultsLimit": num_posts, "resultsType": "posts"}
     try:
         res = requests.post(run_url, json=payload, timeout=30)
-        if res.status_code != 201: return {"error": "Erreur API"}
+        if res.status_code != 201: return {"error": f"Erreur API ({res.status_code})"}
         ds_id = res.json().get("data", {}).get("defaultDatasetId")
         time.sleep(20)
         items = requests.get(f"https://api.apify.com/v2/datasets/{ds_id}/items?token={API_TOKEN}").json()
@@ -132,29 +115,39 @@ def fetch_insta_data(insta_url, num_posts):
     except Exception as e: return {"error": str(e)}
 
 def format_num(n):
-    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-    if n >= 1_000: return f"{n/1_000:.1f}K"
-    return str(int(n))
+    try:
+        n = float(n) # Conversion sécurisée
+        if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+        if n >= 1_000: return f"{n/1_000:.1f}K"
+        return str(int(n))
+    except (ValueError, TypeError):
+        return "0"
 
 # --- 4. INTERFACE ---
 with st.sidebar:
     st.header("Configuration")
-    limit = st.slider("Nombre de posts", 5, 24, 9)
+    limit = st.slider("Nombre de publications", 3, 24, 6)
 
-url_input = st.text_input("Profil Instagram", placeholder="Lien du compte...")
+url_input = st.text_input("Profil Instagram", placeholder="Lien du profil...")
 
 if st.button("Lancer l'analyse"):
     if url_input:
-        with st.spinner("Extraction en cours..."):
+        with st.spinner("Analyse du feed en cours..."):
             data = fetch_insta_data(url_input, limit)
             if isinstance(data, list) and len(data) > 0:
                 df = pd.DataFrame(data)
                 
-                # Nettoyage
-                for col in ['likesCount', 'videoPlayCount', 'commentsCount', 'displayUrl', 'url']:
-                    if col not in df.columns: df[col] = 0 if 'Count' in col else ""
+                # NETTOYAGE ET CONVERSION ROBUSTE
+                for col in ['likesCount', 'videoPlayCount', 'commentsCount']:
+                    if col not in df.columns:
+                        df[col] = 0
+                    else:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
                 
-                df['Total'] = pd.to_numeric(df['likesCount']).fillna(0) + pd.to_numeric(df['videoPlayCount']).fillna(0)
+                if 'displayUrl' not in df.columns: df['displayUrl'] = ""
+                if 'url' not in df.columns: df['url'] = "https://instagram.com"
+
+                df['Total'] = df['likesCount'] + df['videoPlayCount']
                 df_sorted = df.sort_values(by='Total', ascending=False)
 
                 # AFFICHAGE TOP 3 DESIGN RILA
@@ -165,14 +158,14 @@ if st.button("Lancer l'analyse"):
                 for i, (idx, row) in enumerate(top3.iterrows()):
                     with cols[i]:
                         raw_url = row.get('displayUrl', '')
-                        img_src = f"https://images.weserv.nl/?url={quote(raw_url)}&w=600&h=700&fit=cover" if raw_url else ""
+                        img_src = f"https://images.weserv.nl/?url={quote(str(raw_url))}&w=600&h=750&fit=cover" if raw_url else "https://via.placeholder.com/600x750"
                         
-                        likes = format_num(row['likesCount'])
-                        views = format_num(row['videoPlayCount'])
-                        comm = format_num(row['commentsCount'])
+                        l_val = row['likesCount']
+                        v_val = row['videoPlayCount']
+                        c_val = row['commentsCount']
                         
-                        # Calcul Engagement (Engagement / Vues)
-                        rate = f"{( (row['likesCount']+row['commentsCount']) / row['videoPlayCount'] * 100):.1f}%" if row['videoPlayCount'] > 0 else "0%"
+                        # Taux Engagement (Engagements / Vues)
+                        rate = f"{( (l_val + c_val) / v_val * 100):.1f}%" if v_val > 0 else "N/A"
 
                         card_html = f"""
                         <div class="rila-card">
@@ -180,11 +173,11 @@ if st.button("Lancer l'analyse"):
                             <div class="card-stats">
                                 <div class="stat-row">
                                     <span class="stat-label">Interactions</span>
-                                    <span class="stat-value">{likes}</span>
+                                    <span class="stat-value">{format_num(l_val)}</span>
                                 </div>
                                 <div class="stat-row">
                                     <span class="stat-label">Visibilité</span>
-                                    <span class="stat-value">{views if row['videoPlayCount'] > 0 else "Photo"}</span>
+                                    <span class="stat-value">{format_num(v_val) if v_val > 0 else "Photo"}</span>
                                 </div>
                                 <div class="stat-row">
                                     <span class="stat-label">Engagement</span>
@@ -192,19 +185,21 @@ if st.button("Lancer l'analyse"):
                                 </div>
                                 <div class="stat-row">
                                     <span class="stat-label">Commentaires</span>
-                                    <span class="stat-value">{comm}</span>
+                                    <span class="stat-value">{format_num(c_val)}</span>
                                 </div>
                             </div>
                             <div class="card-link">
-                                <a href="{row['url']}" target="_blank">Découvrir le post</a>
+                                <a href="{row['url']}" target="_blank">DÉCOUVRIR LE POST</a>
                             </div>
                         </div>
                         """
                         st.markdown(card_html, unsafe_allow_html=True)
 
                 st.divider()
-                # Tableau épuré
-                st.subheader("Historique des publications")
-                st.dataframe(df_sorted[['likesCount', 'videoPlayCount', 'commentsCount', 'url']].head(10), use_container_width=True)
+                st.subheader("Historique récent")
+                # Affichage d'un tableau propre avec des colonnes renommées
+                df_table = df_sorted[['likesCount', 'videoPlayCount', 'commentsCount', 'url']].copy()
+                df_table.columns = ['Likes', 'Vues', 'Comms', 'Lien']
+                st.dataframe(df_table.head(10), use_container_width=True)
             else:
-                st.error("Erreur de récupération.")
+                st.error("Impossible de récupérer les données. Vérifiez si le compte est public.")

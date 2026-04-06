@@ -21,78 +21,17 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400;600&display=swap');
 
     .main { background-color: #FDFCFB; }
-    
-    h1, h2, h3 {
-        font-family: 'Playfair Display', serif !important;
-        color: #1A1A1A !important;
-        font-weight: 400 !important;
-        letter-spacing: 0.05em;
-    }
-
-    .rila-card {
-        background-color: #ffffff;
-        border-radius: 4px;
-        border: 1px solid #EAE7E2;
-        margin-bottom: 25px;
-        overflow: hidden;
-        transition: transform 0.3s ease;
-    }
-
-    .card-image {
-        width: 100%;
-        height: 300px;
-        object-fit: cover;
-    }
-
-    .card-stats {
-        padding: 25px;
-        font-family: 'Inter', sans-serif;
-    }
-
-    .stat-row {
-        display: flex;
-        justify-content: space-between;
-        padding: 12px 0;
-        border-bottom: 1px solid #F5F2EF;
-    }
+    h1, h2, h3 { font-family: 'Playfair Display', serif !important; color: #1A1A1A !important; font-weight: 400 !important; letter-spacing: 0.05em; }
+    .rila-card { background-color: #ffffff; border-radius: 4px; border: 1px solid #EAE7E2; margin-bottom: 25px; overflow: hidden; }
+    .card-image { width: 100%; height: 350px; object-fit: cover; }
+    .card-stats { padding: 25px; font-family: 'Inter', sans-serif; }
+    .stat-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #F5F2EF; }
     .stat-row:last-child { border-bottom: none; }
-
-    .stat-label {
-        color: #8C8279;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
-    }
-
-    .stat-value {
-        color: #1A1A1A;
-        font-size: 14px;
-        font-weight: 600;
-    }
-
-    .card-link {
-        text-align: center;
-        padding: 20px;
-        background-color: #FDFCFB;
-    }
-    .card-link a {
-        color: #D4C2AD;
-        text-decoration: none;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.2em;
-        border-bottom: 1px solid #D4C2AD;
-    }
-
-    div.stButton > button {
-        background-color: #D4C2AD !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 0px !important;
-        letter-spacing: 0.1em;
-        padding: 0.6rem 2.5rem !important;
-    }
+    .stat-label { color: #8C8279; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; }
+    .stat-value { color: #1A1A1A; font-size: 14px; font-weight: 600; }
+    .card-link { text-align: center; padding: 20px; background-color: #FDFCFB; }
+    .card-link a { color: #D4C2AD; text-decoration: none; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.2em; border-bottom: 1px solid #D4C2AD; }
+    div.stButton > button { background-color: #D4C2AD !important; color: white !important; border: none !important; border-radius: 0px !important; letter-spacing: 0.1em; padding: 0.6rem 2.5rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -106,22 +45,21 @@ def fetch_insta_data(insta_url, num_posts):
     run_url = f"https://api.apify.com/v2/acts/{ACTOR_ID}/runs?token={API_TOKEN}"
     payload = {"directUrls": [insta_url], "resultsLimit": num_posts, "resultsType": "posts"}
     try:
-        res = requests.post(run_url, json=payload, timeout=30)
+        res = requests.post(run_url, json=payload, timeout=40)
         if res.status_code != 201: return {"error": f"Erreur API ({res.status_code})"}
         ds_id = res.json().get("data", {}).get("defaultDatasetId")
-        time.sleep(20)
-        items = requests.get(f"https://api.apify.com/v2/datasets/{ds_id}/items?token={API_TOKEN}").json()
-        return items
+        time.sleep(20) # Temps pour le scraping
+        items_res = requests.get(f"https://api.apify.com/v2/datasets/{ds_id}/items?token={API_TOKEN}")
+        return items_res.json()
     except Exception as e: return {"error": str(e)}
 
 def format_num(n):
     try:
-        n = float(n) # Conversion sécurisée
-        if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-        if n >= 1_000: return f"{n/1_000:.1f}K"
-        return str(int(n))
-    except (ValueError, TypeError):
-        return "0"
+        val = float(n)
+        if val >= 1_000_000: return f"{val/1_000_000:.1f}M"
+        if val >= 1_000: return f"{val/1_000:.1f}K"
+        return str(int(val))
+    except: return "0"
 
 # --- 4. INTERFACE ---
 with st.sidebar:
@@ -134,21 +72,25 @@ if st.button("Lancer l'analyse"):
     if url_input:
         with st.spinner("Analyse du feed en cours..."):
             data = fetch_insta_data(url_input, limit)
-            if isinstance(data, list) and len(data) > 0:
+            
+            # GESTION DES ERREURS DE RÉCUPÉRATION
+            if isinstance(data, dict) and "error" in data:
+                st.error(f"Erreur : {data['error']}")
+            elif not isinstance(data, list) or len(data) == 0:
+                st.warning("⚠️ Aucune donnée trouvée. Le compte est peut-être privé ou l'URL est incorrecte.")
+            else:
                 df = pd.DataFrame(data)
                 
-                # NETTOYAGE ET CONVERSION ROBUSTE
+                # NETTOYAGE COMPLET DES COLONNES (Surtout pour les comptes sans vidéo)
                 for col in ['likesCount', 'videoPlayCount', 'commentsCount']:
-                    if col not in df.columns:
-                        df[col] = 0
-                    else:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
                 
                 if 'displayUrl' not in df.columns: df['displayUrl'] = ""
                 if 'url' not in df.columns: df['url'] = "https://instagram.com"
 
-                df['Total'] = df['likesCount'] + df['videoPlayCount']
-                df_sorted = df.sort_values(by='Total', ascending=False)
+                # Tri par Performance (Likes + Vues)
+                df['Performance_Score'] = df['likesCount'] + df['videoPlayCount']
+                df_sorted = df.sort_values(by='Performance_Score', ascending=False)
 
                 # AFFICHAGE TOP 3 DESIGN RILA
                 st.subheader("Contenus Performants")
@@ -158,14 +100,17 @@ if st.button("Lancer l'analyse"):
                 for i, (idx, row) in enumerate(top3.iterrows()):
                     with cols[i]:
                         raw_url = row.get('displayUrl', '')
-                        img_src = f"https://images.weserv.nl/?url={quote(str(raw_url))}&w=600&h=750&fit=cover" if raw_url else "https://via.placeholder.com/600x750"
+                        img_src = f"https://images.weserv.nl/?url={quote(str(raw_url))}&w=600&h=800&fit=cover" if raw_url else "https://via.placeholder.com/600"
                         
-                        l_val = row['likesCount']
-                        v_val = row['videoPlayCount']
-                        c_val = row['commentsCount']
+                        l_val = float(row['likesCount'])
+                        v_val = float(row['videoPlayCount'])
+                        c_val = float(row['commentsCount'])
                         
-                        # Taux Engagement (Engagements / Vues)
-                        rate = f"{( (l_val + c_val) / v_val * 100):.1f}%" if v_val > 0 else "N/A"
+                        # CALCUL TAUX ENGAGEMENT SÉCURISÉ (Si pas de vues, on met N/A ou 0%)
+                        if v_val > 0:
+                            rate = f"{((l_val + c_val) / v_val * 100):.1f}%"
+                        else:
+                            rate = "Photo" # Ou "0%" selon ta préférence
 
                         card_html = f"""
                         <div class="rila-card">
@@ -177,7 +122,7 @@ if st.button("Lancer l'analyse"):
                                 </div>
                                 <div class="stat-row">
                                     <span class="stat-label">Visibilité</span>
-                                    <span class="stat-value">{format_num(v_val) if v_val > 0 else "Photo"}</span>
+                                    <span class="stat-value">{format_num(v_val) if v_val > 0 else "Format Photo"}</span>
                                 </div>
                                 <div class="stat-row">
                                     <span class="stat-label">Engagement</span>
@@ -197,9 +142,6 @@ if st.button("Lancer l'analyse"):
 
                 st.divider()
                 st.subheader("Historique récent")
-                # Affichage d'un tableau propre avec des colonnes renommées
                 df_table = df_sorted[['likesCount', 'videoPlayCount', 'commentsCount', 'url']].copy()
                 df_table.columns = ['Likes', 'Vues', 'Comms', 'Lien']
                 st.dataframe(df_table.head(10), use_container_width=True)
-            else:
-                st.error("Impossible de récupérer les données. Vérifiez si le compte est public.")
